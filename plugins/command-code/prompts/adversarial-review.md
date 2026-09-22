@@ -1,0 +1,1 @@
+Challenge the implementation and its assumptions. Look for correctness failures, unsafe edge cases, hidden coupling, rollback problems, race conditions, security boundaries, and simpler alternatives. Do not modify files. Prefer specific evidence over stylistic criticism.
