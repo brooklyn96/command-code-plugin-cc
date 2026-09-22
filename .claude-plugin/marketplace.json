@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "brooklyn96-command-code-plugin-cc",
+  "version": "0.2.0",
+  "description": "Use the native Command Code CLI harness from Claude Code for delegation, review, background jobs, resume, and cache/usage telemetry.",
+  "owner": { "name": "brooklyn96" },
+  "plugins": [
+    {
+      "name": "command-code",
+      "displayName": "Command Code Companion",
+      "description": "Delegate substantial coding work from Claude Code to Command Code while preserving Command Code's native CLI harness.",
+      "version": "0.2.0",
+      "author": { "name": "brooklyn96" },
+      "source": "./plugins/command-code",
+      "category": "development",
+      "repository": "https://github.com/brooklyn96/command-code-plugin-cc",
+      "license": "Apache-2.0"
+    }
+  ]
+}
