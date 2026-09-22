@@ -1,0 +1,11 @@
+{
+  "name": "command-code",
+  "displayName": "Command Code Companion",
+  "version": "0.2.0",
+  "description": "Use the native Command Code CLI harness from Claude Code for review and delegated coding tasks.",
+  "author": { "name": "brooklyn96" },
+  "homepage": "https://github.com/brooklyn96/command-code-plugin-cc#readme",
+  "repository": "https://github.com/brooklyn96/command-code-plugin-cc",
+  "license": "Apache-2.0",
+  "keywords": ["command-code", "deepseek", "delegation", "review", "cli"]
+}
