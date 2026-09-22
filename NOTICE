@@ -1,0 +1,10 @@
+Command Code Companion for Claude Code
+Copyright 2026 brooklyn96
+
+This project is inspired by and interoperates with:
+- openai/codex-plugin-cc (Apache-2.0)
+- tasict/opencode-plugin-cc (Apache-2.0)
+- udeope/command-code-plugin-cc (Apache-2.0)
+- aashahin/codex-commandcode-orchestrator
+
+No affiliation with Command Code, Anthropic, OpenAI, OpenCode, or DeepSeek is implied.
