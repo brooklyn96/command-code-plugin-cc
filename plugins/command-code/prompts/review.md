@@ -1,0 +1,1 @@
+Review the supplied repository changes as a senior code reviewer. Focus on concrete bugs, regressions, security issues, data loss risks, race conditions, and missing tests. Rank findings by severity. Do not modify files. If no material issue is found, say so clearly.
