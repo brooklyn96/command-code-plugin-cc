@@ -1,0 +1,17 @@
+{
+  "name": "command-code-plugin-cc",
+  "version": "0.2.0",
+  "description": "Claude Code companion plugin for delegating work to the native Command Code CLI harness.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "command-code-companion": "./plugins/command-code/scripts/command-code-companion.mjs"
+  },
+  "scripts": {
+    "check": "node --check plugins/command-code/scripts/command-code-companion.mjs && node --check plugins/command-code/scripts/stop-review-gate-hook.mjs",
+    "test": "node --test",
+    "validate": "claude plugin validate --strict . && claude plugin validate --strict ./plugins/command-code"
+  },
+  "engines": { "node": ">=18" },
+  "license": "Apache-2.0"
+}
