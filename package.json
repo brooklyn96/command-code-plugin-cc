@@ -1,6 +1,6 @@
 {
   "name": "command-code-plugin-cc",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Claude Code companion plugin for delegating work to the native Command Code CLI harness.",
   "type": "module",
   "private": true,

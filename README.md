@@ -139,6 +139,10 @@ or point directly at a JavaScript entry:
 $env:COMMAND_CODE_NODE_ENTRY="C:\\...\\node_modules\\command-code\\dist\\cli.js"
 ```
 
+The prompt is always delivered to the CLI on stdin, never as a command-line argument, because argv quoting through a shell can split or reinterpret it. A `.cmd` shim cannot run without a shell, so this plugin does not execute arbitrary shims: when the CLI is found only as a `.cmd` launcher, it resolves the package's JavaScript entry next to it or stops with an error asking for `COMMAND_CODE_NODE_ENTRY`. An npm-global installation is fully supported this way.
+
+CLI lookup uses `COMMAND_CODE_NODE_ENTRY`, then `COMMAND_CODE_BIN` (each must be an absolute path to an existing file), then scans `PATH` in order and trusts only absolute `PATH` entries, never `where`, `which`, or a shell. A launcher such as pnpm or yarn that leaves a `.cmd` on `PATH` without the package's `node_modules/command-code` next to it needs `COMMAND_CODE_NODE_ENTRY` set to the absolute path of the CLI's JavaScript entry.
+
 ## Configuration
 
 Stored at:

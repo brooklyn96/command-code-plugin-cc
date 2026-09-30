@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { parseInvocation, shellSplit } from './lib/args.mjs';
+import { parseInvocation, shellSplit, splitStdinInvocation } from './lib/args.mjs';
 import { buildReviewPrompt } from './lib/git.mjs';
 import { makeJobId, writeJob, readJob, listJobs, cancelJob } from './lib/jobs.mjs';
 import {
@@ -16,13 +16,18 @@ import {
 const __filename=fileURLToPath(import.meta.url);
 const __dirname=path.dirname(__filename);
 
-function readArgs(argv){
+function readArgs(action,argv){
   const a=[...argv];
   const i=a.indexOf('--stdin');
-  if(i<0) return a;
+  if(i<0) return {argv:a,stdin:false};
   a.splice(i,1);
-  let s=''; try{s=fs.readFileSync(0,'utf8').trim()}catch{}
-  return [...a,...(s?shellSplit(s):[])];
+  let s=''; try{s=fs.readFileSync(0,'utf8')}catch{}
+  if(action==='rescue'||action==='task'){
+    const stdin=splitStdinInvocation(s);
+    return {argv:[...a,...stdin.argv],stdin:true,body:stdin.rest};
+  }
+  const t=s.trim();
+  return {argv:[...a,...(t?shellSplit(t):[])],stdin:true};
 }
 
 function usage(){
@@ -51,7 +56,8 @@ function setup(flags){
   let version=null,versionError=null,smoke=null;
   if(cli){const r=runSync(['--version'],{timeout:10000});version=(r.stdout||r.stderr).trim().split(/\r?\n/)[0]||null;versionError=r.status===0?null:(r.error||r.stderr||`exit ${r.status}`)}
   if(flags.authCheck && cli){
-    const r=runSync(['--print','Reply with only OK','--output-format','json','--permission-mode','plan','--trust','--skip-onboarding','--max-turns','3'],{timeout:120000});
+    const ask='Reply with only OK';
+    const r=runSync(['--print','--output-format','json','--permission-mode','plan','--trust','--skip-onboarding','--max-turns','3'],{timeout:120000,input:ask});
     const {result}=parseJsonStream(r.stdout); const txt=result?.finalText||r.stdout||r.stderr;
     smoke={ok:r.status===0 && /\bOK\b/.test(txt),status:r.status,error:r.status===0?null:(r.stderr||r.error)};
   }
@@ -87,18 +93,18 @@ function configure(flags){
 
 function buildCliArgs({prompt,write=false,flags,keepSession=true}){
   const cfg=loadConfig();
-  const args=['--print',prompt,'--output-format','json','--permission-mode',write?'auto-accept':'plan','--trust','--skip-onboarding','--max-turns',String(cfg.maxTurns||100)];
+  const args=['--print','--output-format','json','--permission-mode',write?'auto-accept':'plan','--trust','--skip-onboarding','--max-turns',String(cfg.maxTurns||100)];
   const model=flags.model||cfg.defaultModel; const effort=flags.effort||cfg.defaultEffort;
   if(model) args.push('--model',model);
   if(effort){ if(!EFFORTS.has(effort)) throw new Error(`unsupported effort: ${effort}`); args.push('--effort',effort); }
   if(!keepSession) args.push('--no-session');
   if(flags.resume && !flags.fresh){const s=readSession();if(!s?.sessionId) throw new Error('no resumable Command Code session for this workspace');args.push('--resume',s.sessionId)}
-  return {args,model,effort};
+  return {args,input:prompt,model,effort};
 }
 
 async function foreground({kind,prompt,write,flags,keepSession=true}){
   ensureDirs(); const built=buildCliArgs({prompt,write,flags,keepSession});
-  const r=await runCli(built.args,{}); const {result}=parseJsonStream(r.stdout);
+  const r=await runCli(built.args,{input:built.input}); const {result}=parseJsonStream(r.stdout);
   const text=typeof result?.finalText==='string'?result.finalText:(r.stdout.trim()||r.stderr.trim());
   const run={kind,text,usage:result?.usage||null,sessionId:result?.sessionId||null,exitCode:r.code,stderr:r.stderr,model:built.model||null,effort:built.effort||null,endedAt:Date.now()};
   if(run.sessionId) writeSession({sessionId:run.sessionId,updatedAt:Date.now(),model:run.model});
@@ -110,7 +116,7 @@ async function foreground({kind,prompt,write,flags,keepSession=true}){
 function background({kind,prompt,write,flags,keepSession=true}){
   ensureDirs(); const built=buildCliArgs({prompt,write,flags,keepSession}); const id=makeJobId();
   const outPath=path.join(jobsDir(),`${id}.out.json`); const errPath=path.join(jobsDir(),`${id}.err.log`);
-  const meta={id,kind,status:'queued',cwd:process.cwd(),startedAt:Date.now(),pid:null,cliArgs:built.args,model:built.model||null,effort:built.effort||null,outPath,errPath};
+  const meta={id,kind,status:'queued',cwd:process.cwd(),startedAt:Date.now(),pid:null,cliArgs:built.args,input:built.input,model:built.model||null,effort:built.effort||null,outPath,errPath};
   writeJob(meta);
   const worker=path.join(__dirname,'worker.mjs');
   const child=spawn(process.execPath,[worker,id],{cwd:process.cwd(),detached:true,stdio:'ignore',windowsHide:true});
@@ -125,11 +131,19 @@ async function doReview(flags,adversarial=false){
   return flags.background?background(spec):foreground(spec);
 }
 
-async function rescue(flags){
+async function rescue(flags,stdinBody){
   if(!resolveCli()) throw new Error('Command Code CLI not found. Install with: npm install -g command-code');
   if(flags.resume&&flags.fresh) throw new Error('choose only one of --resume or --fresh');
-  const task=flags.positional.join(' ').trim();
-  if(!task) throw new Error('rescue requires a task');
+  let task;
+  if(stdinBody!==undefined){
+    const body=String(stdinBody);
+    const lead=flags.positional.join(' ');
+    task=lead&&body.trim()?`${lead} ${body}`:(lead||body);
+    if(!task.trim()) throw new Error('rescue requires a task');
+  }else{
+    task=flags.positional.join(' ').trim();
+    if(!task) throw new Error('rescue requires a task');
+  }
   const write=!flags.readOnly && (flags.write||WRITE_WORDS.test(task));
   const spec={kind:'rescue',prompt:task,write,flags,keepSession:true};
   return flags.background?background(spec):foreground(spec);
@@ -156,12 +170,14 @@ function showUsage(flags){
 }
 
 async function main(){
-  const action=process.argv[2]||'help'; const flags=parseInvocation(readArgs(process.argv.slice(3)));
+  const action=process.argv[2]||'help';
+  const parsed=readArgs(action,process.argv.slice(3));
+  const flags=parseInvocation(parsed.argv);
   switch(action){
     case 'setup': return setup(flags);
     case 'models': return models(flags);
     case 'config': return configure(flags);
-    case 'rescue':case 'task': return await rescue(flags);
+    case 'rescue':case 'task': return await rescue(flags,parsed.stdin?parsed.body:undefined);
     case 'review': return await doReview(flags,false);
     case 'adversarial-review': return await doReview(flags,true);
     case 'status': return status(flags);

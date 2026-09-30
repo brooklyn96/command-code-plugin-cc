@@ -9,7 +9,7 @@ let meta;
 try{meta=readJob(id)}catch(e){console.error(e.message);process.exit(2)}
 updateJob(id,{status:'running',pid:process.pid,startedAt:meta.startedAt||Date.now()});
 try{
-  const r=await runCli(meta.cliArgs,{cwd:meta.cwd});
+  const r=await runCli(meta.cliArgs,{cwd:meta.cwd,input:meta.input??null});
   const {result}=parseJsonStream(r.stdout);
   const text=typeof result?.finalText==='string'?result.finalText:(r.stdout.trim()||r.stderr.trim());
   const run={jobId:id,text,usage:result?.usage||null,sessionId:result?.sessionId||null,exitCode:r.code,stderr:r.stderr,model:meta.model||null,effort:meta.effort||null,endedAt:Date.now()};

@@ -37,13 +37,15 @@ function isWin(){return process.platform==='win32'}
 function splitPathEnv(){return String(process.env.PATH||'').split(path.delimiter).filter(Boolean)}
 function directCandidates(){ return isWin() ? ['command-code.exe','commandcode.exe','cmdc.exe','command-code.cmd','commandcode.cmd','cmdc.cmd'] : ['command-code','commandcode','cmdc','cmd']; }
 
-function npmGlobalEntry(){
-  const override=process.env.COMMAND_CODE_NODE_ENTRY;
-  if(override && fileExists(override)) return override;
-  const npm=spawnSync(isWin()?'npm.cmd':'npm',['root','-g'],{encoding:'utf8',windowsHide:true});
-  if(npm.status!==0) return null;
-  const root=(npm.stdout||'').trim(); if(!root) return null;
-  const pkg=path.join(root,'command-code','package.json'); if(!fileExists(pkg)) return null;
+function requireOverride(name,value){
+  if(!path.isAbsolute(value)) throw new Error(`${name} must be an absolute path: ${value}`);
+  if(!fileExists(value)) throw new Error(`${name} does not exist: ${value}`);
+  return value;
+}
+
+function nodeEntryNear(shim){
+  const pkg=path.join(path.dirname(shim),'node_modules','command-code','package.json');
+  if(!fileExists(pkg)) return null;
   try{
     const meta=JSON.parse(fs.readFileSync(pkg,'utf8'));
     const bin=meta.bin;
@@ -58,35 +60,31 @@ function npmGlobalEntry(){
 
 function findDirect(){
   const env=process.env.COMMAND_CODE_BIN;
-  if(env && fileExists(env)) return env;
+  if(env!==undefined && env!=='') return requireOverride('COMMAND_CODE_BIN',env);
   for(const dir of splitPathEnv()){
+    if(!path.isAbsolute(dir)) continue;
     for(const name of directCandidates()){
       const p=path.join(dir,name);
       if(fileExists(p)) return p;
     }
   }
-  const finder=isWin()?'where.exe':'which';
-  for(const name of directCandidates()){
-    const r=spawnSync(finder,[name.replace(/\.(exe|cmd)$/i,'')],{encoding:'utf8',windowsHide:true});
-    if(r.status===0){
-      for(const line of String(r.stdout||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean)){
-        if(isWin() && /\\Windows\\System32\\cmd\.exe$/i.test(line)) continue;
-        if(fileExists(line)) return line;
-      }
-    }
-  }
   return null;
 }
 
+let cachedCli;
+
 export function resolveCli(){
-  const entry=npmGlobalEntry();
-  if(entry) return {command:process.execPath,prefix:[entry],display:entry,kind:'npm-node-entry'};
+  if(cachedCli!==undefined) return cachedCli;
+  const override=process.env.COMMAND_CODE_NODE_ENTRY;
+  if(override!==undefined && override!=='') return cachedCli={command:process.execPath,prefix:[requireOverride('COMMAND_CODE_NODE_ENTRY',override)],display:override,kind:'npm-node-entry'};
   const direct=findDirect();
-  if(direct){
-    if(isWin() && /\.cmd$/i.test(direct)) return {command:process.env.ComSpec||'cmd.exe',prefix:['/d','/s','/c',direct],display:direct,kind:'cmd-shim'};
-    return {command:direct,prefix:[],display:direct,kind:'binary'};
+  if(!direct) return cachedCli=null;
+  if(isWin() && /\.(cmd|bat)$/i.test(direct)){
+    const entry=nodeEntryNear(direct);
+    if(!entry) throw new Error(`Command Code launcher ${direct} needs a shell and will not be executed; set COMMAND_CODE_NODE_ENTRY to the absolute path of the CLI's JavaScript entry, or install a native command-code executable.`);
+    return cachedCli={command:process.execPath,prefix:[entry],display:entry,kind:'npm-node-entry'};
   }
-  return null;
+  return cachedCli={command:direct,prefix:[],display:direct,kind:'binary'};
 }
 
 export function runSync(args,{cwd=process.cwd(),timeout=30000,input=null}={}){
@@ -130,16 +128,27 @@ export function renderRun(run){
   return lines.join('\n')+'\n';
 }
 
-export async function runCli(args,{cwd=process.cwd(),onStart}={}){
+export async function runCli(args,{cwd=process.cwd(),onStart,input=null}={}){
   const cli=resolveCli(); if(!cli) throw new Error('Command Code CLI not found. Install it with: npm install -g command-code');
   return await new Promise((resolve,reject)=>{
-    const child=spawn(cli.command,[...cli.prefix,...args],{cwd,stdio:['ignore','pipe','pipe'],windowsHide:true});
+    const child=spawn(cli.command,[...cli.prefix,...args],{cwd,stdio:[input==null?'ignore':'pipe','pipe','pipe'],windowsHide:true});
     onStart?.(child);
-    let out='',err='';
+    let out='',err='',inputError=null,stdinClosed=false;
     child.stdout.on('data',d=>out+=d.toString());
     child.stderr.on('data',d=>err+=d.toString());
     child.on('error',reject);
-    child.on('close',code=>resolve({code:code??1,stdout:out,stderr:err,cli}));
+    if(input!=null){
+      child.stdin.on('error',e=>{if(!inputError)inputError=e});
+      child.stdin.end(String(input),'utf8',e=>{if(e&&!inputError)inputError=e;stdinClosed=true});
+    }
+    child.on('close',code=>{
+      let exit=code??1;
+      if(input!=null && (inputError||!stdinClosed)){
+        if(exit===0) exit=1;
+        err+=`${err&&!err.endsWith('\n')?'\n':''}prompt was not fully delivered to the CLI: ${inputError?inputError.message:'stdin closed before the prompt was written'}\n`;
+      }
+      resolve({code:exit,stdout:out,stderr:err,cli});
+    });
   });
 }
 
