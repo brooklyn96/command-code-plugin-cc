@@ -115,12 +115,13 @@ async function foreground({kind,prompt,write,flags,keepSession=true}){
 
 function background({kind,prompt,write,flags,keepSession=true}){
   ensureDirs(); const built=buildCliArgs({prompt,write,flags,keepSession}); const id=makeJobId();
-  const outPath=path.join(jobsDir(),`${id}.out.json`); const errPath=path.join(jobsDir(),`${id}.err.log`);
-  const meta={id,kind,status:'queued',cwd:process.cwd(),startedAt:Date.now(),pid:null,cliArgs:built.args,input:built.input,model:built.model||null,effort:built.effort||null,outPath,errPath};
+  const outPath=path.join(jobsDir(),`${id}.out.json`); const errPath=path.join(jobsDir(),`${id}.err.log`); const inputPath=path.join(jobsDir(),`${id}.in.txt`);
+  const meta={id,kind,status:'queued',cwd:process.cwd(),startedAt:Date.now(),pid:null,cliArgs:built.args,inputPath,model:built.model||null,effort:built.effort||null,outPath,errPath};
+  fs.writeFileSync(inputPath,built.input,'utf8');
   writeJob(meta);
   const worker=path.join(__dirname,'worker.mjs');
   const child=spawn(process.execPath,[worker,id],{cwd:process.cwd(),detached:true,stdio:'ignore',windowsHide:true});
-  meta.pid=child.pid;meta.status='running';writeJob(meta);child.unref();
+  child.unref();
   console.log(`## Job: ${id}\nstatus: running\nmodel: ${meta.model||'Command Code default'}${meta.effort?` (${meta.effort})`:''}`);
 }
 

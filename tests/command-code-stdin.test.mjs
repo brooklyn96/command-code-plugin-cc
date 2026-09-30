@@ -11,6 +11,7 @@ import { buildReviewPrompt } from '../plugins/command-code/scripts/lib/git.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 const COMPANION = path.join(REPO, 'plugins', 'command-code', 'scripts', 'command-code-companion.mjs');
+const WORKER = path.join(REPO, 'plugins', 'command-code', 'scripts', 'worker.mjs');
 const FAKE = path.join(HERE, 'fake-cli.mjs');
 const FAKE_EXIT = path.join(HERE, 'fake-cli-exit-early.mjs');
 const isWin = process.platform === 'win32';
@@ -69,7 +70,7 @@ function seedJob(cwd, { id = 'task-123' } = {}) {
   return { id, jobs, outPath };
 }
 
-test('T1 a home-directory npm installation resolves and runs without a shell', () => {
+test('T1 a home-directory npm installation resolves and runs without a shell', { timeout: 120000 }, () => {
   const home = makeTmp('home');
   const bin = path.join(home, 'AppData', 'Roaming', 'npm');
   fs.mkdirSync(bin, { recursive: true });
@@ -103,7 +104,7 @@ test('T1 a home-directory npm installation resolves and runs without a shell', (
   assert.equal(o.captured.stdin, 'override inside cwd\n');
 });
 
-test('T2 a relative PATH entry never selects or runs a cwd decoy', () => {
+test('T2 a relative PATH entry never selects or runs a cwd decoy', { timeout: 60000 }, () => {
   const cwd = makeTmp('decoy');
   if (isWin) {
     fs.writeFileSync(path.join(cwd, 'commandcode.exe'), 'decoy');
@@ -118,7 +119,7 @@ test('T2 a relative PATH entry never selects or runs a cwd decoy', () => {
   assert.equal(fs.existsSync(path.join(cwd, 'HIJACKED.txt')), false, 'the decoy must never run');
 });
 
-test('T3 overrides must be an absolute path to an existing file', () => {
+test('T3 overrides must be an absolute path to an existing file', { timeout: 120000 }, () => {
   const cwd = makeTmp('override');
   const rel = runCompanion(['setup', '--json'], { cwd, over: { COMMAND_CODE_NODE_ENTRY: path.join('relative', 'cli.mjs') } });
   assert.equal(rel.status, 1);
@@ -137,7 +138,7 @@ test('T3 overrides must be an absolute path to an existing file', () => {
   assert.match(goneBin.stderr, /COMMAND_CODE_BIN does not exist/);
 });
 
-test('T4 a lone .cmd shim fails with the COMMAND_CODE_NODE_ENTRY error', { skip: !isWin }, () => {
+test('T4 a lone .cmd shim fails with the COMMAND_CODE_NODE_ENTRY error', { skip: !isWin, timeout: 60000 }, () => {
   const cwd = makeTmp('shim-only');
   const bin = path.join(cwd, 'bin');
   fs.mkdirSync(bin);
@@ -148,7 +149,7 @@ test('T4 a lone .cmd shim fails with the COMMAND_CODE_NODE_ENTRY error', { skip:
   assert.equal(fs.existsSync(path.join(bin, 'SHIM_RAN.txt')), false);
 });
 
-test('T5 a failed delivery is never a success and keeps the CLI diagnostics', async () => {
+test('T5 a failed delivery is never a success and keeps the CLI diagnostics', { timeout: 360000 }, async () => {
   const small = makeTmp('early-small');
   const r3 = runCompanion(['rescue', '--read-only', '--stdin'], { cwd: small, stdin: 'y'.repeat(100), entry: FAKE_EXIT, over: { FAKE_EXIT_CODE: '3' } });
   assert.equal(r3.status, 1, r3.stderr);
@@ -162,26 +163,30 @@ test('T5 a failed delivery is never a success and keeps the CLI diagnostics', as
   assert.match(report, /AUTHENTICATION FAILED/);
   assert.match(report, /prompt was not fully delivered/);
 
-  const bg = makeTmp('early-bg');
-  const bgRun = runCompanion(['rescue', '--background', '--read-only', '--stdin'], { cwd: bg, stdin: 'y'.repeat(8 * 1024 * 1024), entry: FAKE_EXIT, over: { FAKE_EXIT_CODE: '0' } });
-  assert.equal(bgRun.status, 0, bgRun.stderr);
-  const id = (/## Job: (\S+)/.exec(bgRun.stdout) || [])[1];
-  assert.ok(id, bgRun.stdout);
-  let meta = null;
-  const t0 = Date.now();
-  while (Date.now() - t0 < 60000) {
-    const s = runCompanion(['status', id], { cwd: bg });
-    try { meta = JSON.parse(s.stdout); } catch {}
-    if (meta && !['queued', 'running'].includes(meta.status)) break;
-    await new Promise((r) => setTimeout(r, 300));
+  for (let i = 0; i < 5; i++) {
+    const bg = makeTmp(`early-bg-${i}`);
+    const bgRun = runCompanion(['rescue', '--background', '--read-only', '--stdin'], { cwd: bg, stdin: 'y'.repeat(8 * 1024 * 1024), entry: FAKE_EXIT, over: { FAKE_EXIT_CODE: '0' } });
+    assert.equal(bgRun.status, 0, bgRun.stderr);
+    const id = (/## Job: (\S+)/.exec(bgRun.stdout) || [])[1];
+    assert.ok(id, bgRun.stdout);
+    let meta = null;
+    let lastStatus = 'no status observed';
+    const t0 = Date.now();
+    while (Date.now() - t0 < 60000) {
+      const s = runCompanion(['status', id], { cwd: bg });
+      try { meta = JSON.parse(s.stdout); } catch {}
+      if (meta) lastStatus = meta.status;
+      if (meta && !['queued', 'running'].includes(meta.status)) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    assert.equal(meta?.status, 'failed', `run ${i}: last status seen: ${lastStatus}`);
+    const res = runCompanion(['result', id], { cwd: bg });
+    assert.match(res.stdout, /AUTHENTICATION FAILED/);
+    assert.match(res.stdout, /prompt was not fully delivered/);
   }
-  assert.equal(meta?.status, 'failed', JSON.stringify(meta));
-  const res = runCompanion(['result', id], { cwd: bg });
-  assert.match(res.stdout, /AUTHENTICATION FAILED/);
-  assert.match(res.stdout, /prompt was not fully delivered/);
 });
 
-test('T6 result, status, usage and cancel --stdin keep the HEAD grammar', () => {
+test('T6 result, status, usage and cancel --stdin keep the HEAD grammar', { timeout: 120000 }, () => {
   const cwd = makeTmp('actions-result');
   seedJob(cwd);
 
@@ -208,7 +213,7 @@ test('T6 result, status, usage and cancel --stdin keep the HEAD grammar', () => 
   assert.equal(cancel.status, 0, cancel.stderr);
 });
 
-test('T6 models --stdin applies the quoted and the spaced filter identically', () => {
+test('T6 models --stdin applies the quoted and the spaced filter identically', { timeout: 120000 }, () => {
   const cwd = makeTmp('actions-models');
   const quoted = runCompanion(['models', '--stdin'], { cwd, stdin: '"deepseek flash"\n' });
   const spaced = runCompanion(['models', '--stdin'], { cwd, stdin: 'deepseek   flash\n' });
@@ -218,7 +223,7 @@ test('T6 models --stdin applies the quoted and the spaced filter identically', (
   assert.match(quoted.stdout, /deepseek flash two/);
 });
 
-test('T6 config --stdin writes the decoded values and rejects a bad effort', () => {
+test('T6 config --stdin writes the decoded values and rejects a bad effort', { timeout: 120000 }, () => {
   const cwd = makeTmp('actions-config');
   const ok = runCompanion(['config', '--stdin'], { cwd, stdin: '--model "a b" --effort high --review-gate on\n' });
   assert.equal(ok.status, 0, ok.stderr);
@@ -232,7 +237,7 @@ test('T6 config --stdin writes the decoded values and rejects a bad effort', () 
   assert.match(bad.stderr, /unsupported effort: nope/);
 });
 
-test('T6 review and adversarial-review --stdin keep flags written after the focus', () => {
+test('T6 review and adversarial-review --stdin keep flags written after the focus', { timeout: 120000 }, () => {
   for (const action of ['review', 'adversarial-review']) {
     const cwd = makeTmp(`actions-${action}`);
     const r = runCompanion([action, '--stdin'], { cwd, stdin: 'the focus --model m9 --effort low\n' });
@@ -246,7 +251,7 @@ test('T6 review and adversarial-review --stdin keep flags written after the focu
   }
 });
 
-test('T6 setup --auth-check --json sends the smoke prompt on stdin', () => {
+test('T6 setup --auth-check --json sends the smoke prompt on stdin', { timeout: 120000 }, () => {
   const cwd = makeTmp('actions-setup');
   const r = runCompanion(['setup', '--stdin'], { cwd, stdin: '--auth-check --json\n' });
   assert.equal(r.status, 0, r.stderr);
@@ -255,7 +260,7 @@ test('T6 setup --auth-check --json sends the smoke prompt on stdin', () => {
   assert.equal(argValue(r.captured.argv, '--print'), '--output-format');
 });
 
-test('T7 rescue delivers the raw stdin body byte for byte on the CLI stdin', () => {
+test('T7 rescue delivers the raw stdin body byte for byte on the CLI stdin', { timeout: 120000 }, () => {
   const cases = [
     { name: 'quotes', stdin: 'say "hello world" and \'goodbye\'\n', args: ['rescue', '--read-only', '--stdin'], perm: 'plan' },
     { name: 'escaped-whitespace', stdin: 'keep\\ this\\ escaped and this too\n', args: ['rescue', '--read-only', '--stdin'], perm: 'plan' },
@@ -280,7 +285,7 @@ test('T7 rescue delivers the raw stdin body byte for byte on the CLI stdin', () 
   }
 });
 
-test('T7 rescue parses only real leading flags; the rest is the raw body', () => {
+test('T7 rescue parses only real leading flags; the rest is the raw body', { timeout: 60000 }, () => {
   const cwd = makeTmp('leading');
   const body = 'Do it: --read-only is body text\n\tindented\n';
   const r = runCompanion(['rescue', '--stdin'], { cwd, stdin: '--write --model m1 --effort high\n' + body });
@@ -291,7 +296,7 @@ test('T7 rescue parses only real leading flags; the rest is the raw body', () =>
   assert.equal(argValue(r.captured.argv, '--permission-mode'), 'auto-accept');
 });
 
-test('T7 argv words before --stdin become a prefix of the delivered task', () => {
+test('T7 argv words before --stdin become a prefix of the delivered task', { timeout: 60000 }, () => {
   const cwd = makeTmp('prefix');
   const r = runCompanion(['rescue', '--read-only', 'prefix', 'words', '--stdin'], { cwd, stdin: 'body line\n' });
   assert.equal(r.status, 0, r.stderr);
@@ -299,7 +304,7 @@ test('T7 argv words before --stdin become a prefix of the delivered task', () =>
   assert.equal(argValue(r.captured.argv, '--permission-mode'), 'plan');
 });
 
-test('T8 a 40 000-character prompt arrives byte-equal and never on argv', () => {
+test('T8 a 40 000-character prompt arrives byte-equal and never on argv', { timeout: 60000 }, () => {
   const cwd = makeTmp('long');
   const body = 'review this diff: ' + 'x'.repeat(40000);
   const r = runCompanion(['rescue', '--read-only', '--stdin'], { cwd, stdin: body });
@@ -309,7 +314,7 @@ test('T8 a 40 000-character prompt arrives byte-equal and never on argv', () => 
   assert.ok(!r.captured.argv.some(a => a.includes(body.slice(0, 64))));
 });
 
-test('T8 empty and whitespace-only rescue bodies keep the original error', () => {
+test('T8 empty and whitespace-only rescue bodies keep the original error', { timeout: 60000 }, () => {
   for (const stdin of ['', '   \n', '\n']) {
     const cwd = makeTmp('empty');
     const r = runCompanion(['rescue', '--read-only', '--stdin'], { cwd, stdin });
@@ -318,7 +323,7 @@ test('T8 empty and whitespace-only rescue bodies keep the original error', () =>
   }
 });
 
-test('T8 executable path containing a space is executed without a shell', () => {
+test('T8 executable path containing a space is executed without a shell', { timeout: 60000 }, () => {
   const parent = makeTmp('space');
   const dir = path.join(parent, 'dir with space');
   const cwd = path.join(parent, 'run');
@@ -332,7 +337,7 @@ test('T8 executable path containing a space is executed without a shell', () => 
   assert.equal(r.captured.stdin, body);
 });
 
-test('T8 review and adversarial-review deliver the generated prompt byte for byte', () => {
+test('T8 review and adversarial-review deliver the generated prompt byte for byte', { timeout: 120000 }, () => {
   const makeRepo = (tag) => {
     const dir = makeTmp(tag);
     const g = (args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8', windowsHide: true });
@@ -359,7 +364,7 @@ test('T8 review and adversarial-review deliver the generated prompt byte for byt
   }
 });
 
-test('T8 background stores flags in cliArgs and the raw prompt in input', async () => {
+test('T8 background stores flags in cliArgs and the prompt in a sibling file', { timeout: 120000 }, async () => {
   const cwd = makeTmp('bg');
   const body = 'background "body" with | pipe\n';
   const bg = runCompanion(['rescue', '--background', '--stdin'], { cwd, stdin: '--write\n' + body });
@@ -381,6 +386,58 @@ test('T8 background stores flags in cliArgs and the raw prompt in input', async 
   assert.equal(argValue(captured.argv, '--permission-mode'), 'auto-accept');
   assert.ok(meta, 'job metadata must be readable');
   assert.equal(meta.status, 'completed');
-  assert.equal(meta.input, body);
+  assert.ok(!('input' in meta), 'the prompt must not live in the job metadata');
+  assert.equal(typeof meta.inputPath, 'string', 'the job must name its input file');
+  assert.ok(fs.existsSync(meta.inputPath), 'the input file must exist');
+  assert.equal(fs.readFileSync(meta.inputPath, 'utf8'), body, 'the input file must hold the exact body');
+  const raw = fs.readFileSync(path.join(path.dirname(meta.inputPath), `${id}.json`), 'utf8');
+  assert.ok(!raw.includes('background'), 'the prompt must not appear in the job file');
   assert.deepEqual(meta.cliArgs.filter(a => a.includes('background')), []);
+  assert.ok(!meta.cliArgs.some(a => a.includes('pipe')), 'cliArgs must hold flags only');
+});
+
+test('T9 an 8 MB background prompt stays out of the job file and the job list', { timeout: 120000 }, async () => {
+  const cwd = makeTmp('big-input');
+  const body = 'z'.repeat(8 * 1024 * 1024);
+  const bg = runCompanion(['rescue', '--background', '--read-only', '--stdin'], { cwd, stdin: body, timeout: 120000 });
+  assert.equal(bg.status, 0, bg.stderr);
+  const id = (/## Job: (\S+)/.exec(bg.stdout) || [])[1];
+  assert.ok(id, bg.stdout);
+  let meta = null;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 60000) {
+    const s = runCompanion(['status', id], { cwd });
+    try { meta = JSON.parse(s.stdout); } catch {}
+    if (meta && !['queued', 'running'].includes(meta.status)) break;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  assert.equal(meta?.status, 'completed', JSON.stringify(meta));
+  const jobFile = path.join(path.dirname(meta.inputPath), `${id}.json`);
+  assert.ok(fs.statSync(jobFile).size < 4096, `the job file must stay small: ${fs.statSync(jobFile).size} bytes`);
+  assert.equal(fs.statSync(meta.inputPath).size, 8 * 1024 * 1024, 'the input file must hold the whole prompt');
+  assert.equal(fs.readFileSync(meta.inputPath, 'utf8'), body);
+  const listed = runCompanion(['status'], { cwd });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.ok(listed.stdout.includes(id), listed.stdout);
+  assert.ok(!listed.stdout.includes('.in.txt'), listed.stdout);
+});
+
+test('T10 a job whose input file is missing fails through the worker catch', { timeout: 60000 }, () => {
+  const cwd = makeTmp('missing-input');
+  const { id, jobs } = seedJob(cwd, { id: 'task-missing-input' });
+  const meta = {
+    id, kind: 'rescue', status: 'queued', cwd, startedAt: 1, pid: null,
+    cliArgs: ['--print', '--output-format', 'json'],
+    inputPath: path.join(jobs, `${id}.in.txt`),
+    model: null, effort: null,
+    outPath: path.join(jobs, `${id}.out.json`),
+    errPath: path.join(jobs, `${id}.err.log`),
+  };
+  fs.writeFileSync(path.join(jobs, `${id}.json`), JSON.stringify(meta, null, 2) + '\n');
+  const r = spawnSync(process.execPath, [WORKER, id], { cwd, encoding: 'utf8', env: baseEnv(cwd), windowsHide: true, timeout: 30000 });
+  assert.equal(r.status, 1, r.stderr);
+  const final = JSON.parse(fs.readFileSync(path.join(jobs, `${id}.json`), 'utf8'));
+  assert.equal(final.status, 'failed');
+  assert.ok(final.error && final.error.length > 0, 'the failure must record the error text');
+  assert.ok(final.error.includes(`${id}.in.txt`), final.error);
 });
